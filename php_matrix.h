@@ -26,6 +26,14 @@ extern zend_module_entry matrix_module_entry;
 
 #define PHP_MATRIX_VERSION "0.1.0" /* Replace with version number for your extension */
 
+// カスタムオブジェクト構造体
+typedef struct _php_matrix {
+    long numRows;
+    long numCols;
+    double* data;
+    zend_object std;
+} php_matrix;
+
 #ifdef PHP_WIN32
 #	define PHP_MATRIX_API __declspec(dllexport)
 #elif defined(__GNUC__) && __GNUC__ >= 4

@@ -26,6 +26,8 @@
 #include "php_ini.h"
 #include "ext/standard/info.h"
 #include "php_matrix.h"
+#include "pthread.h"
+#include "cblas.h"
 
 /* If you declare any globals in php_matrix.h uncomment this:
 ZEND_DECLARE_MODULE_GLOBALS(matrix)
@@ -84,6 +86,524 @@ static void php_matrix_init_globals(zend_matrix_globals *matrix_globals)
 */
 /* }}} */
 
+static inline php_matrix* php_matrix_fetch_object(zend_object* obj) {
+    return (php_matrix*)((char *)obj - XtOffsetOf(php_matrix, std));
+}
+
+#define Z_MATRIX_OBJ_P(zv) php_matrix_fetch_object(Z_OBJ_P(zv));
+
+zend_class_entry* matrix_ce;
+
+static zend_object_handlers matrix_object_handlers;
+
+// 結果の matrix を作成する共通関数
+static php_matrix* init_return_value(zval* return_value, long numRows, long numCols) {
+    php_matrix* result;
+
+    object_init_ex(return_value, matrix_ce);
+    Z_SET_REFCOUNT_P(return_value, 1);
+    //ZVAL_MAKE_REF(return_value);
+
+    result = Z_MATRIX_OBJ_P(return_value);
+    result->numRows = numRows;
+    result->numCols = numCols;
+    result->data = ecalloc(result->numRows * result->numCols, sizeof(double));
+    return result;
+}
+
+// デストラクタ
+static void php_matrix_destroy_object(zend_object* object) {
+    php_matrix* obj = php_matrix_fetch_object(object);
+    zend_objects_destroy_object(object);
+}
+static void php_matrix_object_free_storage(zend_object* object) {
+    php_matrix* obj = php_matrix_fetch_object(object);
+    if (obj->data) {
+        efree(obj->data);
+    }
+    zend_object_std_dtor(&obj->std);
+}
+
+// コンストラクタ
+static zend_object* php_matrix_new(zend_class_entry* ce) {
+    php_matrix* obj = (php_matrix*)ecalloc(1, sizeof(php_matrix) + zend_object_properties_size(ce));
+    zend_object_std_init(&obj->std, ce);
+    object_properties_init(&obj->std, ce);
+
+    obj->std.handlers = &matrix_object_handlers;
+    return &obj->std;
+}
+
+// __construct() メソッド
+PHP_METHOD(Matrix, __construct) {
+    long numRows, numCols;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ll",
+            &numRows, &numCols) == FAILURE) {
+        return;
+    }
+    php_matrix* object = Z_MATRIX_OBJ_P(getThis());
+    object->numRows = numRows;
+    object->numCols = numCols;
+    object->data = ecalloc(numRows * numCols, sizeof(double));
+    RETURN_TRUE;
+}
+
+// shape() メソッド
+PHP_METHOD(Matrix, shape) {
+    php_matrix* object = Z_MATRIX_OBJ_P(getThis());
+
+    zval shape;
+    array_init_size(&shape, 2);
+    add_index_long(&shape, 0, object->numRows);
+    add_index_long(&shape, 1, object->numCols);
+
+    RETURN_ZVAL(&shape, 1, 1);
+}
+
+// (i, j) 成分を取得
+PHP_METHOD(Matrix, get) {
+    long i, j;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ll", &i, &j) == FAILURE) {
+        return;
+    }
+    php_matrix* object = Z_MATRIX_OBJ_P(getThis());
+    RETURN_DOUBLE(object->data[i * object->numCols + j]);
+}
+
+// (i, j) 成分を設定
+PHP_METHOD(Matrix, set) {
+    long i, j;
+    double val;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "lld", &i, &j, &val) == FAILURE) {
+        return;
+    }
+    // printf("(i, j, val) = (%ld, %ld, %f)\n", i, j, val);
+    php_matrix* object = Z_MATRIX_OBJ_P(getThis());
+    object->data[i * object->numCols + j] = val;
+}
+
+#define NUM_THREAD 4
+
+struct matrix_params {
+    double* res_buff;
+    double* m1_buff;
+    double* m2_buff;
+    long r1;
+    long c1;
+    long c2;
+    long startRow;
+    long step;
+};
+
+void* compute_partial(void* p) {
+    struct matrix_params* params = (struct matrix_params*)p;
+    double* res_buff = params->res_buff;
+    double* m1_buff = params->m1_buff;
+    double* m2_buff = params->m2_buff;
+    long startRow = params->startRow;
+    long r1 = params->r1;
+    long c1 = params->c1;
+    long c2 = params->c2;
+    long step = params->step;
+    for (long i = startRow; i < r1; i += step) {
+        for (long j = 0; j < c2; ++j) {
+            double sum = 0;
+            for (long k = 0; k < c1; ++k) {
+                sum += m1_buff[i * c1 + k] * m2_buff[k * c2 + j];
+            }
+            res_buff[i * c2 + j] = sum;
+        }
+    }
+    return NULL;
+}
+
+// mul() メソッド
+PHP_METHOD(Matrix, mul) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    zval* z_matrix;
+    php_matrix* matrix;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &z_matrix, matrix_ce) == FAILURE) {
+        return;
+    }
+
+    if (!self) {
+        RETURN_FALSE;
+    }
+    matrix = Z_MATRIX_OBJ_P(z_matrix);
+
+    int r1 = (int)self->numRows;
+    int c1 = (int)self->numCols;
+    int r2 = (int)matrix->numRows;
+    int c2 = (int)matrix->numCols;
+
+    // 結果の matrix を作成
+    php_matrix* result = init_return_value(return_value, r1, c2);
+
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+            r1, c2, c1,
+            1.0,
+            self->data, c1,
+            matrix->data, c2,
+            0.0,
+            result->data, c2);
+    /*
+    if (r >= 64) {
+        pthread_t threads[NUM_THREAD];
+        struct matrix_params params[NUM_THREAD];
+        for (int t = 0; t < NUM_THREAD; ++t) {
+            params[t].res_buff = result->data;
+            params[t].m1_buff = self->data;
+            params[t].m2_buff = matrix->data;
+            params[t].r1 = r;
+            params[t].c1 = c1;
+            params[t].c2 = c2;
+            params[t].startRow = t;
+            params[t].step = NUM_THREAD;
+            pthread_create(&threads[t], NULL, compute_partial, &params[t]);
+        }
+        for (int t = 0; t < NUM_THREAD; ++t) {
+            pthread_join(threads[t], NULL);
+        }
+    }
+    else {
+        for (long i = 0; i < r; ++i) {
+            for (long j = 0; j < c2; ++j) {
+                double sum = 0;
+                for (long k = 0; k < c1; ++k) {
+                    sum += self->data[i * c1 + k] * matrix->data[k * c2 + j];
+                }
+                result->data[i * c2 + j] = sum;
+            }
+        }
+    }
+     */
+}
+
+PHP_METHOD(Matrix, componentwiseProd) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    zval* z_matrix;
+    php_matrix* matrix;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &z_matrix, matrix_ce) == FAILURE) {
+        return;
+    }
+
+    if (!self) {
+        RETURN_FALSE;
+    }
+    matrix = Z_MATRIX_OBJ_P(z_matrix);
+
+    // 結果の matrix を作成
+    long r = self->numRows;
+    long c = self->numCols;
+    php_matrix* result = init_return_value(return_value, r, c);
+
+    for (long i = 0; i < r; ++i) {
+        for (long j = 0; j < c; ++j) {
+            result->data[i * c + j] = self->data[i * c + j] * matrix->data[i * c + j];
+        }
+    }
+}
+
+PHP_METHOD(Matrix, plus) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    zval* z_matrix;
+    php_matrix* matrix;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &z_matrix, matrix_ce) == FAILURE) {
+        return;
+    }
+
+    matrix = Z_MATRIX_OBJ_P(z_matrix);
+
+    // 結果の matrix を作成
+    long r = self->numRows;
+    long c = self->numCols;
+    php_matrix* result = init_return_value(return_value, r, c);
+
+    if (r == matrix->numRows) {
+        for (long i = 0; i < r; ++i) {
+            for (long j = 0; j < c; ++j) {
+                result->data[i * c + j] = self->data[i * c + j] + matrix->data[i * c + j];
+            }
+        }
+    } else if (matrix->numRows == 1) {
+        // ブロードキャスト
+        for (long i = 0; i < r; ++i) {
+            for (long j = 0; j < c; ++j) {
+                result->data[i * c + j] = self->data[i * c + j] + matrix->data[j];
+            }
+        }
+    }
+}
+
+PHP_METHOD(Matrix, minus) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    zval* z_matrix;
+    php_matrix* matrix;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &z_matrix, matrix_ce) == FAILURE) {
+        return;
+    }
+
+    matrix = Z_MATRIX_OBJ_P(z_matrix);
+
+    // 結果の matrix を作成
+    long r = self->numRows;
+    long c = self->numCols;
+    php_matrix* result = init_return_value(return_value, r, c);
+
+    if (r == matrix->numRows) {
+        for (long i = 0; i < r; ++i) {
+            for (long j = 0; j < c; ++j) {
+                result->data[i * c + j] = self->data[i * c + j] - matrix->data[i * c + j];
+            }
+        }
+    } else if (matrix->numRows == 1) {
+        // ブロードキャスト
+        for (long i = 0; i < r; ++i) {
+            for (long j = 0; j < c; ++j) {
+                result->data[i * c + j] = self->data[i * c + j] - matrix->data[j];
+            }
+        }
+    }
+}
+
+PHP_METHOD(Matrix, scale) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    double scalar;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "d", &scalar) == FAILURE) {
+        return;
+    }
+
+    if (!self) {
+        RETURN_FALSE;
+    }
+
+    long r = self->numRows;
+    long c = self->numCols;
+
+    // 結果の matrix を作成
+    php_matrix* result = init_return_value(return_value, r, c);
+
+    for (long i = 0; i < r; ++i) {
+        for (long j = 0; j < c; ++j) {
+            result->data[i * c + j] = self->data[i * c + j] * scalar;
+        }
+    }
+}
+
+PHP_METHOD(Matrix, transpose) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    long r = self->numRows;
+    long c = self->numCols;
+
+    // 結果の matrix を作成
+    php_matrix* result = init_return_value(return_value, c, r);
+
+    for (long i = 0; i < r; ++i) {
+        for (long j = 0; j < c; ++j) {
+            result->data[j * r + i] = self->data[i * c + j];
+        }
+    }
+}
+
+// 行方向に和を取る
+PHP_METHOD(Matrix, sumRow) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    long r = self->numRows;
+    long c = self->numCols;
+
+    // 結果の matrix を作成
+    php_matrix* result = init_return_value(return_value, 1, c);
+
+    for (long j = 0; j < c; ++j) {
+        double sum = 0;
+        for (long i = 0; i < r; ++i) {
+            sum += self->data[i * c + j];
+        }
+        result->data[j] = sum;
+    }
+}
+
+// 列方向に和を取る
+PHP_METHOD(Matrix, sumCol) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    long r = self->numRows;
+    long c = self->numCols;
+
+    // 結果の matrix を作成
+    php_matrix* result = init_return_value(return_value, r, 1);
+
+    for (long i = 0; i < r; ++i) {
+        double sum = 0;
+        for (long j = 0; j < c; ++j) {
+            sum += self->data[i * c + j];
+        }
+        result->data[i] = sum;
+    }
+}
+
+PHP_METHOD(Matrix, argmax) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    long dir;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &dir) == FAILURE) {
+        return;
+    }
+
+    long r = self->numRows;
+    long c = self->numCols;
+
+    if (dir == 0) {
+        php_matrix* result = init_return_value(return_value, 1, c);
+        for (long j = 0; j < c; ++j) {
+            double max = DBL_MIN;
+            long index = 0;
+            for (long i = 0; i < r; ++i) {
+                if (self->data[i * c + j] > max) {
+                    index = i;
+                    max = self->data[i * c + j];
+                }
+            }
+            result->data[j] = index;
+        }
+    } else {
+        php_matrix* result = init_return_value(return_value, r, 1);
+        for (long i = 0; i < r; ++i) {
+            double max = DBL_MIN;
+            long index = 0;
+            for (long j = 0; j < c; ++j) {
+                if (self->data[i * c + j] > max) {
+                    index = j;
+                    max = self->data[i * c + j];
+                }
+            }
+            result->data[i] = index;
+        }
+    }
+}
+
+PHP_METHOD(Matrix, toArray) {
+    php_matrix* self = Z_MATRIX_OBJ_P(getThis());
+
+    long r = self->numRows;
+    long c = self->numCols;
+
+    zval array;
+    array_init_size(&array, r);
+    for (long i = 0; i < r; ++i) {
+        zval row;
+        array_init_size(&row, c);
+        for (int j = 0; j < c; ++j) {
+            add_index_double(&row, j, self->data[i * c + j]);
+        }
+        add_index_zval(&array, i, &row);
+    }
+
+    RETURN_ZVAL(&array, 1, 1);
+
+}
+
+// static createFromData メソッド
+PHP_METHOD(Matrix, createFromData) {
+
+    zval* z_data;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "a", &z_data, matrix_ce) == FAILURE) {
+        return;
+    }
+    HashTable* rows = HASH_OF(z_data);
+
+    uint numRows = zend_hash_num_elements(rows);
+
+    zval* row = zend_hash_index_find(rows, 0);
+    HashTable* first_row = HASH_OF(row);
+
+    uint numCols = zend_hash_num_elements(first_row);
+
+    // 結果の matrix を作成
+    php_matrix* result = init_return_value(return_value, numRows, numCols);
+
+    zval* elm;
+    for (long i = 0; i < numRows; ++i) {
+        row = zend_hash_index_find(rows, i);
+        HashTable* row_hash = HASH_OF(row);
+        for (long j = 0; j < numCols; ++j) {
+            elm = zend_hash_index_find(row_hash, j);
+            convert_to_double_ex(elm);
+            result->data[i * numCols + j] = Z_DVAL_P(elm);
+        }
+    }
+}
+
+// static zerosLike メソッド
+PHP_METHOD(Matrix, zerosLike) {
+
+    zval* z_matrix;
+    php_matrix* matrix;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &z_matrix, matrix_ce) == FAILURE) {
+        return;
+    }
+    matrix = Z_MATRIX_OBJ_P(z_matrix);
+
+    long numRows = matrix->numRows;
+    long numCols = matrix->numCols;
+
+    // 結果の matrix を作成
+    init_return_value(return_value, numRows, numCols);
+    // ↑ ゼロで初期化されるのでこれでよいはず
+}
+
+// static onesLike メソッド
+PHP_METHOD(Matrix, onesLike) {
+
+    zval* z_matrix;
+    php_matrix* matrix;
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "O", &z_matrix, matrix_ce) == FAILURE) {
+        return;
+    }
+    matrix = Z_MATRIX_OBJ_P(z_matrix);
+
+    long numRows = matrix->numRows;
+    long numCols = matrix->numCols;
+
+    // 結果の matrix を作成
+    php_matrix* result = init_return_value(return_value, numRows, numCols);
+
+    // 1 を代入していく
+    for (long i = 0; i < numRows; ++i) {
+        for (long j = 0; j < numCols; ++j) {
+            result->data[i * numCols + j] = 1.0;
+        }
+    }
+}
+
+const zend_function_entry matrix_methods[] = {
+    PHP_ME(Matrix, __construct, NULL, ZEND_ACC_CTOR | ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, shape, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, get, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, set, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, mul, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, componentwiseProd, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, plus, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, minus, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, scale, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, transpose, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, sumRow, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, sumCol, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, argmax, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, toArray, NULL, ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, createFromData, NULL, ZEND_ACC_STATIC | ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, zerosLike, NULL, ZEND_ACC_STATIC | ZEND_ACC_PUBLIC)
+    PHP_ME(Matrix, onesLike, NULL, ZEND_ACC_STATIC | ZEND_ACC_PUBLIC)
+    {NULL, NULL, NULL}
+};
+
 /* {{{ PHP_MINIT_FUNCTION
  */
 PHP_MINIT_FUNCTION(matrix)
@@ -91,6 +611,17 @@ PHP_MINIT_FUNCTION(matrix)
 	/* If you have INI entries, uncomment these lines
 	REGISTER_INI_ENTRIES();
 	*/
+    zend_class_entry ce;
+    INIT_CLASS_ENTRY(ce, "Matrix", matrix_methods);
+    matrix_ce = zend_register_internal_class(&ce);
+    matrix_ce->create_object = php_matrix_new;
+
+    memcpy(&matrix_object_handlers, zend_get_std_object_handlers(), sizeof(zend_object_handlers));
+    matrix_object_handlers.offset    = XtOffsetOf(php_matrix, std);
+    matrix_object_handlers.clone_obj = NULL;
+    matrix_object_handlers.free_obj  = php_matrix_object_free_storage;
+    matrix_object_handlers.dtor_obj  = php_matrix_destroy_object;
+
 	return SUCCESS;
 }
 /* }}} */
