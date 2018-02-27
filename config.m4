@@ -17,6 +17,9 @@ dnl PHP_ARG_ENABLE(matrix, whether to enable matrix support,
 dnl Make sure that the comment is aligned:
 dnl [  --enable-matrix           Enable matrix support])
 
+PHP_ARG_ENABLE(openblas,
+  [ --enable-openblas            Enable openblas support])
+
 if test "$PHP_MATRIX" != "no"; then
   dnl Write more examples of tests here...
 
@@ -60,4 +63,22 @@ if test "$PHP_MATRIX" != "no"; then
   dnl PHP_SUBST(MATRIX_SHARED_LIBADD)
 
   PHP_NEW_EXTENSION(matrix, matrix.c, $ext_shared,, -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1)
+
+  PHP_SUBST(MATRIX_SHARED_LIBADD)
+
+  OPENBLAS_LIBS=`pkg-config --libs openblas`
+  OPENBLAS_INCS=`pkg-config --cflags openblas`
+
+  POPENBLAS_LIBS="$LDFLAGS $OPENBLAS_INCS"
+  POPENBLAS_INCS="$CFLAGS $OPENBLAS_INCS"
+
+  MATRIX_DIR=$PHP_MATRIX
+
+  AC_MSG_RESULT(openblas includes : $OPENBLAS_INCS)
+  AC_MSG_RESULT(openblas links : $OPENBLAS_LIBS)
+
+  PHP_EVAL_INCLINE($POPENBLAS_INCS)
+  dnl PHP_EVAL_LIBLINE($POPENBLAS_LIBS, MATRIX_SHARED_LIBADD)
+
+  PHP_ADD_LIBRARY_WITH_PATH(openblas, openblas/lib, MATRIX_SHARED_LIBADD)
 fi
