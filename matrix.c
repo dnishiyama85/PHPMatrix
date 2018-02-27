@@ -182,7 +182,7 @@ PHP_METHOD(Matrix, set) {
     object->data[i * object->numCols + j] = val;
 }
 
-// mul() メソッド
+// 行列の積
 PHP_METHOD(Matrix, mul) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
 
@@ -214,6 +214,7 @@ PHP_METHOD(Matrix, mul) {
             result->data, c2);
 }
 
+// 成分ごとの積（アダマール積）
 PHP_METHOD(Matrix, componentwiseProd) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
 
@@ -240,6 +241,7 @@ PHP_METHOD(Matrix, componentwiseProd) {
     }
 }
 
+// 和
 PHP_METHOD(Matrix, plus) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
 
@@ -272,6 +274,7 @@ PHP_METHOD(Matrix, plus) {
     }
 }
 
+// 差
 PHP_METHOD(Matrix, minus) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
 
@@ -304,6 +307,7 @@ PHP_METHOD(Matrix, minus) {
     }
 }
 
+// スカラー倍
 PHP_METHOD(Matrix, scale) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
 
@@ -329,6 +333,7 @@ PHP_METHOD(Matrix, scale) {
     }
 }
 
+// 転置
 PHP_METHOD(Matrix, transpose) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
 
