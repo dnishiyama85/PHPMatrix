@@ -182,41 +182,6 @@ PHP_METHOD(Matrix, set) {
     object->data[i * object->numCols + j] = val;
 }
 
-#define NUM_THREAD 4
-
-struct matrix_params {
-    double* res_buff;
-    double* m1_buff;
-    double* m2_buff;
-    long r1;
-    long c1;
-    long c2;
-    long startRow;
-    long step;
-};
-
-void* compute_partial(void* p) {
-    struct matrix_params* params = (struct matrix_params*)p;
-    double* res_buff = params->res_buff;
-    double* m1_buff = params->m1_buff;
-    double* m2_buff = params->m2_buff;
-    long startRow = params->startRow;
-    long r1 = params->r1;
-    long c1 = params->c1;
-    long c2 = params->c2;
-    long step = params->step;
-    for (long i = startRow; i < r1; i += step) {
-        for (long j = 0; j < c2; ++j) {
-            double sum = 0;
-            for (long k = 0; k < c1; ++k) {
-                sum += m1_buff[i * c1 + k] * m2_buff[k * c2 + j];
-            }
-            res_buff[i * c2 + j] = sum;
-        }
-    }
-    return NULL;
-}
-
 // mul() メソッド
 PHP_METHOD(Matrix, mul) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
@@ -247,37 +212,6 @@ PHP_METHOD(Matrix, mul) {
             matrix->data, c2,
             0.0,
             result->data, c2);
-    /*
-    if (r >= 64) {
-        pthread_t threads[NUM_THREAD];
-        struct matrix_params params[NUM_THREAD];
-        for (int t = 0; t < NUM_THREAD; ++t) {
-            params[t].res_buff = result->data;
-            params[t].m1_buff = self->data;
-            params[t].m2_buff = matrix->data;
-            params[t].r1 = r;
-            params[t].c1 = c1;
-            params[t].c2 = c2;
-            params[t].startRow = t;
-            params[t].step = NUM_THREAD;
-            pthread_create(&threads[t], NULL, compute_partial, &params[t]);
-        }
-        for (int t = 0; t < NUM_THREAD; ++t) {
-            pthread_join(threads[t], NULL);
-        }
-    }
-    else {
-        for (long i = 0; i < r; ++i) {
-            for (long j = 0; j < c2; ++j) {
-                double sum = 0;
-                for (long k = 0; k < c1; ++k) {
-                    sum += self->data[i * c1 + k] * matrix->data[k * c2 + j];
-                }
-                result->data[i * c2 + j] = sum;
-            }
-        }
-    }
-     */
 }
 
 PHP_METHOD(Matrix, componentwiseProd) {
