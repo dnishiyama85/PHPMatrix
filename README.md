@@ -1,15 +1,20 @@
 # INTRODUCTION
 This is a PHP extension which computes float matrix products.
+
 It supports OpenBLAS sgemm and cuBLAS sgemm function.
+
 To Enable OpenBLAS support, you have to specify its library path.
+
 To Enable cuBLAS support, CUDA development environment required.
 
 Some other functions like sum, scale, transpose, etc... included.
+
 (But, they are not utilize OpenBLAS nor cuBLAS.)
 
 # INSTALL
 
 Clone this repository to your computer.
+
 PHP development environment required.
 
 ```shell
