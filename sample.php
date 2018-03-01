@@ -1,7 +1,7 @@
 <?php
 ini_set('memory_limit', '4G');
 
-$SIZE = 500;
+$SIZE = 50;
 
 // 素のPHPの行列
 $a = random_array($SIZE, $SIZE);
@@ -23,7 +23,6 @@ echo "OpenBlas版 => {$time}秒\n";
 echo $matC->toArray()[$SIZE - 1][$SIZE - 1];
 echo "\n";
 
-/*
 
 $time_start = microtime(true);
 for ($i = 0; $i < 100; $i++) {
@@ -32,7 +31,6 @@ for ($i = 0; $i < 100; $i++) {
 $time = microtime(true) - $time_start;
 echo "素のPHP版 => {$time}秒\n";
 echo $c[$SIZE - 1][$SIZE - 1] . "\n";
-*/
 
 
 function random_array($r, $c) {
