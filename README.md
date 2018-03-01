@@ -41,5 +41,5 @@ $ make install # if needed
 $ php -d extension=./modules/matrix.so sample.php
 ```
 # LICENSE
-This software is released under the MIT License, see LICENSE.txt.
+This software is released under the MIT License, see LICENSE.
 
