@@ -35,4 +35,6 @@ $ make install # if needed
 # specify the extension file explicitly unless installed globally.
 $ php -d extension=./modules/matrix.so sample.php
 ```
+# LICENSE
+This software is released under the MIT License, see LICENSE.txt.
 
