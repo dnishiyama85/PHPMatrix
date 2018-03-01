@@ -17,8 +17,11 @@ dnl PHP_ARG_ENABLE(matrix, whether to enable matrix support,
 dnl Make sure that the comment is aligned:
 dnl [  --enable-matrix           Enable matrix support])
 
-PHP_ARG_ENABLE(openblas,
-  [ --enable-openblas            Enable openblas support])
+PHP_ARG_WITH(openblas, for OpenBLAS support,
+  [ --with-openblas            Include OpenBLAS support],no,no)
+
+PHP_ARG_ENABLE(cublas, for cuBLAS support,
+  [ --enable-cublas              Enable cuBLAS support],no,no)
 
 if test "$PHP_MATRIX" != "no"; then
   dnl Write more examples of tests here...
@@ -62,23 +65,26 @@ if test "$PHP_MATRIX" != "no"; then
   dnl
   dnl PHP_SUBST(MATRIX_SHARED_LIBADD)
 
-  PHP_NEW_EXTENSION(matrix, matrix.c, $ext_shared,, -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1)
+  dnl Check whether to enable OpenBLAS support
+  if test "$PHP_OPENBLAS" != "no"; then
+    AC_DEFINE(USE_OPENBLAS,1,[Include OpenBLAS support])
+    OPENBLAS_INCS=`PKG_CONFIG_PATH=$PHP_OPENBLAS/lib/pkgconfig pkg-config --cflags openblas`
+    OPENBLAS_LIBS=`PKG_CONFIG_PATH=$PHP_OPENBLAS/lib/pkgconfig pkg-config --libs   openblas`
+    AC_MSG_RESULT(OPENBLAS_INCS = $OPENBLAS_INCS)
+    AC_MSG_RESULT(OPENBLAS_LIBS = $OPENBLAS_LIBS)
+    PHP_EVAL_INCLINE($OPENBLAS_INCS)
+    PHP_EVAL_LIBLINE($OPENBLAS_LIBS, MATRIX_SHARED_LIBADD)
+  fi
 
+  dnl Check wheter to enable cuBLAS support
+  if test "$PHP_CUBLAS" != "no"; then
+    AC_DEFINE(USE_CUBLAS,1,[Include cuBLAS support])
+    CUBLAS_DGEMM_LIBS="-L./modules -lcublas_sgemm"
+    AC_MSG_RESULT(CUBLAS_DGEMM_LIBS = $CUBLAS_DGEMM_LIBS)
+    PHP_EVAL_LIBLINE($CUBLAS_DGEMM_LIBS, MATRIX_SHARED_LIBADD)
+  fi
+
+  PHP_NEW_EXTENSION(matrix, matrix.c, $ext_shared,, -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1)
   PHP_SUBST(MATRIX_SHARED_LIBADD)
 
-  OPENBLAS_LIBS=`pkg-config --libs openblas`
-  OPENBLAS_INCS=`pkg-config --cflags openblas`
-
-  POPENBLAS_LIBS="$LDFLAGS $OPENBLAS_INCS"
-  POPENBLAS_INCS="$CFLAGS $OPENBLAS_INCS"
-
-  MATRIX_DIR=$PHP_MATRIX
-
-  AC_MSG_RESULT(openblas includes : $OPENBLAS_INCS)
-  AC_MSG_RESULT(openblas links : $OPENBLAS_LIBS)
-
-  PHP_EVAL_INCLINE($POPENBLAS_INCS)
-  dnl PHP_EVAL_LIBLINE($POPENBLAS_LIBS, MATRIX_SHARED_LIBADD)
-
-  PHP_ADD_LIBRARY_WITH_PATH(openblas, openblas/lib, MATRIX_SHARED_LIBADD)
 fi

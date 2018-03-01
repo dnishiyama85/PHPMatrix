@@ -27,7 +27,11 @@
 #include "ext/standard/info.h"
 #include "php_matrix.h"
 #include "pthread.h"
+
+#ifdef USE_OPENBLAS
 #include "cblas.h"
+#endif
+
 
 /* If you declare any globals in php_matrix.h uncomment this:
 ZEND_DECLARE_MODULE_GLOBALS(matrix)
@@ -107,7 +111,7 @@ static php_matrix* init_return_value(zval* return_value, long numRows, long numC
     result = Z_MATRIX_OBJ_P(return_value);
     result->numRows = numRows;
     result->numCols = numCols;
-    result->data = ecalloc(result->numRows * result->numCols, sizeof(double));
+    result->data = ecalloc(result->numRows * result->numCols, sizeof(float));
     return result;
 }
 
@@ -144,7 +148,7 @@ PHP_METHOD(Matrix, __construct) {
     php_matrix* object = Z_MATRIX_OBJ_P(getThis());
     object->numRows = numRows;
     object->numCols = numCols;
-    object->data = ecalloc(numRows * numCols, sizeof(double));
+    object->data = ecalloc(numRows * numCols, sizeof(float));
     RETURN_TRUE;
 }
 
@@ -173,7 +177,7 @@ PHP_METHOD(Matrix, get) {
 // (i, j) 成分を設定
 PHP_METHOD(Matrix, set) {
     long i, j;
-    double val;
+    float val;
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "lld", &i, &j, &val) == FAILURE) {
         return;
     }
@@ -181,6 +185,38 @@ PHP_METHOD(Matrix, set) {
     php_matrix* object = Z_MATRIX_OBJ_P(getThis());
     object->data[i * object->numCols + j] = val;
 }
+
+// 外部ライブラリ(OpenBLAS, CuBLAS）を使わないシンプルな行列積の実装
+// (r1, c1): (a の行数, a の列数)
+// (r2, c2): (b の行数, b の列数)
+
+static inline void _simple_mul(float* a, float* b, float* c, int r1, int c1, int r2, int c2) {
+
+    for (int i = 0; i < r1; ++i) {
+        for (int j = 0; j < c2; ++j) {
+            for (int k = 0; k < c1; ++k) {
+                c[i * c2 + j] += a[i * c1 + k] * b[k * c2 + j];
+            }
+        }
+    }
+}
+
+#ifdef USE_OPENBLAS
+// OpenBLAS を使った行列積
+static inline void _openblas_mul(float* a, float* b, float* c, int r1, int c1, int r2, int c2) {
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+            r1, c2, c1,
+            1.0,
+            a, c1,
+            b, c2,
+            0.0,
+            c, c2);
+}
+#endif
+
+#ifdef USE_CUBLAS
+extern void _cublas_mul(float* a, float* b, float* c, int r1, int c1, int r2, int c2);
+#endif
 
 // 行列の積
 PHP_METHOD(Matrix, mul) {
@@ -205,13 +241,14 @@ PHP_METHOD(Matrix, mul) {
     // 結果の matrix を作成
     php_matrix* result = init_return_value(return_value, r1, c2);
 
-    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-            r1, c2, c1,
-            1.0,
-            self->data, c1,
-            matrix->data, c2,
-            0.0,
-            result->data, c2);
+#if defined USE_OPENBLAS
+    _openblas_mul(self->data, matrix->data, result->data, r1, c1, r2, c2);
+#elif defined USE_CUBLAS
+    _cublas_mul(self->data, matrix->data, result->data, r1, c1, r2, c2);
+#else
+    _simple_mul(self->data, matrix->data, result->data, r1, c1, r2, c2);
+#endif
+
 }
 
 // 成分ごとの積（アダマール積）
@@ -311,7 +348,7 @@ PHP_METHOD(Matrix, minus) {
 PHP_METHOD(Matrix, scale) {
     php_matrix* self = Z_MATRIX_OBJ_P(getThis());
 
-    double scalar;
+    float scalar;
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "d", &scalar) == FAILURE) {
         return;
     }
@@ -361,7 +398,7 @@ PHP_METHOD(Matrix, sumRow) {
     php_matrix* result = init_return_value(return_value, 1, c);
 
     for (long j = 0; j < c; ++j) {
-        double sum = 0;
+        float sum = 0;
         for (long i = 0; i < r; ++i) {
             sum += self->data[i * c + j];
         }
@@ -380,7 +417,7 @@ PHP_METHOD(Matrix, sumCol) {
     php_matrix* result = init_return_value(return_value, r, 1);
 
     for (long i = 0; i < r; ++i) {
-        double sum = 0;
+        float sum = 0;
         for (long j = 0; j < c; ++j) {
             sum += self->data[i * c + j];
         }
@@ -402,7 +439,7 @@ PHP_METHOD(Matrix, argmax) {
     if (dir == 0) {
         php_matrix* result = init_return_value(return_value, 1, c);
         for (long j = 0; j < c; ++j) {
-            double max = DBL_MIN;
+            float max = FLT_MIN;
             long index = 0;
             for (long i = 0; i < r; ++i) {
                 if (self->data[i * c + j] > max) {
@@ -415,7 +452,7 @@ PHP_METHOD(Matrix, argmax) {
     } else {
         php_matrix* result = init_return_value(return_value, r, 1);
         for (long i = 0; i < r; ++i) {
-            double max = DBL_MIN;
+            float max = FLT_MIN;
             long index = 0;
             for (long j = 0; j < c; ++j) {
                 if (self->data[i * c + j] > max) {

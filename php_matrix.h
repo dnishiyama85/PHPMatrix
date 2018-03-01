@@ -30,7 +30,7 @@ extern zend_module_entry matrix_module_entry;
 typedef struct _php_matrix {
     long numRows;
     long numCols;
-    double* data;
+    float* data;
     zend_object std;
 } php_matrix;
 
